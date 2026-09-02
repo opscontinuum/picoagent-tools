@@ -151,3 +151,32 @@ class LintToolTargetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DevToolsGateTests(unittest.TestCase):
+    """The opt-in file for Node execution is not the agent's to touch."""
+
+    def _rt(self):
+        class Rt:
+            cfg = {"_user_dir": "/tmp", "_cwd": "/tmp", "plugins": {}}
+        return Rt()
+
+    def test_the_gate_file_is_refused_for_every_tool(self):
+        import mermaid_tools
+        target = str(mermaid_tools.DEV_TOOLS_FILE)
+        for tool in ("read", "write", "edit", "grep_search", "structured_data", "some_new_tool"):
+            result = run(mermaid_tools.guard_dev_tools_file(
+                {"name": tool, "args": {"path": target}}, self._rt()))
+            self.assertTrue(result and result.get("block"), f"{tool} should be refused")
+
+    def test_an_alternate_path_argument_name_is_also_refused(self):
+        import mermaid_tools
+        result = run(mermaid_tools.guard_dev_tools_file(
+            {"name": "x", "args": {"file": str(mermaid_tools.DEV_TOOLS_FILE)}}, self._rt()))
+        self.assertTrue(result and result.get("block"))
+
+    def test_an_unrelated_file_is_untouched(self):
+        import mermaid_tools
+        result = run(mermaid_tools.guard_dev_tools_file(
+            {"name": "read", "args": {"path": "/tmp/some/other.toml"}}, self._rt()))
+        self.assertIsNone(result)

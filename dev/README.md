@@ -57,36 +57,55 @@ npm init -y
 npm install mermaid jsdom@22        # jsdom 23+ needs Node 20+; 22 works on Node 18
 ```
 
-**2. Point the tests at it:**
+**2. Write the opt-in file**, `~/.picoagent/dev-tools.toml`:
 
-```bash
-PICOAGENT_MERMAID_PARSER_DIR=~/mermaid-check python -m unittest discover -s tests -v
+```toml
+[mermaid_parser]
+modules_dir = "~/mermaid-check"
+# paths = "/path/to/picoagent/docs"   # optional; defaults to this repo
 ```
 
-Optionally set `PICOAGENT_MERMAID_PARSER_PATHS` (os.pathsep-separated) to validate other
-repositories' markdown instead of this one:
+Then run the suite normally:
 
 ```bash
-PICOAGENT_MERMAID_PARSER_DIR=~/mermaid-check \
-PICOAGENT_MERMAID_PARSER_PATHS=/path/to/picoagent/docs \
-  python -m unittest discover -s tests -v
+python -m unittest discover -s tests -v
 ```
 
-Without step 1, step 2 skips with a message naming the missing package. The check is inert
-until a human has installed those packages on purpose.
+Without step 1, step 2 skips with a message naming the missing package. Without step 2,
+everything skips. The check is inert until a human has done both on purpose.
+
+**Not an environment variable, deliberately.** An env var is no gate at all against the agent:
+the shell tool runs commands as the user, and `VAR=x command` sets a variable for the child
+whatever the parent environment allows. That was measured against this project's own guarded
+shell, not assumed - inline assignment, `export`, and writing files all succeeded.
 
 ## What this does and does not guarantee
 
-Being straight about the boundary, since a control that is oversold is worse than none.
+Being exact, since a control that is oversold is worse than none.
 
-The real guarantee is **narrow and structural**: the shipped `mermaid_lint` tool contains no
-code that spawns a process. An agent calling it cannot reach Node, whatever the environment
-says. Nothing here widens the tool's capabilities.
+**Structural, and holds absolutely:** the shipped `mermaid_lint` tool contains no code that
+spawns a process. No `subprocess`, no shell, no network. An agent calling the tool cannot
+reach Node whatever any configuration says. Nothing in this directory widens the tool's
+capabilities - it is developer tooling that the tool cannot invoke.
 
-The environment variable is a **convenience switch, not a security boundary**. An agent with
-shell access runs as you and could set that variable, or install packages, exactly as you
-could - our own [trust boundaries](https://github.com/opscontinuum/picoagent/blob/main/docs/security/trust-boundaries.md)
-say as much. If that matters in your environment, the control is the one you already have:
-don't grant shell access, or don't install Node where the agent can reach it. The two-step
-setup makes accidental activation essentially impossible; it does not make deliberate
-activation impossible.
+**Enforced against the agent's file tools:** the plugin registers a `tool_call` guard that
+refuses any tool call naming `~/.picoagent/dev-tools.toml`, by resolved path, for *every* tool
+rather than a known list. `read`, `write`, `edit`, `grep_search`, `structured_data`, and
+anything added later are all refused.
+
+**Not enforced against the shell**, and this is the honest limit. A shell command runs as you
+and can write any file you can write, so an agent with an unrestricted `shell` tool can create
+this file. Measured, not theoretical. The guard closes the easy and accidental routes; it is
+not containment.
+
+If your environment needs the hard guarantee, use the levers that actually provide it:
+
+* don't install Node where the agent can reach it - the check exits rather than installing
+  anything, so with no packages present it cannot run at all;
+* restrict the toolset (`api.set_active_tools([...])` without `shell`, i.e. a read-only or
+  plan mode);
+* use `permission-gate` to refuse writes to that path.
+
+This mirrors what [the trust boundaries doc](https://github.com/opscontinuum/picoagent/blob/main/docs/security/trust-boundaries.md)
+says generally: the boundary around an agent is the tools it is given, not a configuration
+file it happens to be asked not to touch.
