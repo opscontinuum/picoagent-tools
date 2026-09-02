@@ -26,18 +26,39 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "dev" / "mermaid_parse_check.mjs"
 
-#: Set to a directory that already contains node_modules/mermaid and node_modules/jsdom.
-#: Absent - the default - and every test here skips. Nothing is installed automatically.
-MODULES_DIR = os.environ.get("PICOAGENT_MERMAID_PARSER_DIR")
+#: The opt-in lives in a file under the user's home, not an environment variable.
+#:
+#: An env var would be no gate at all against the agent: the shell tool runs commands as the
+#: user, and `VAR=x command` sets a variable for the child regardless of what the parent
+#: environment allows. That was measured, not assumed. A file is not a boundary either (a
+#: shell can write files), but it is at least refused by the *file* tools, and it cannot be
+#: set for the duration of one command. See dev/README.md for what this does and does not buy.
+GATE_FILE = Path.home() / ".picoagent" / "dev-tools.toml"
 
-#: What to validate. Defaults to this repo's own markdown.
-DOC_PATHS = os.environ.get("PICOAGENT_MERMAID_PARSER_PATHS", str(REPO))
+
+def _read_gate() -> dict[str, str]:
+    """Parse the opt-in file. Missing or unreadable means "not enabled", never an error."""
+    if not GATE_FILE.is_file():
+        return {}
+    try:
+        import tomllib
+        with GATE_FILE.open("rb") as handle:
+            data = tomllib.load(handle)
+    except (OSError, ValueError):
+        return {}
+    section = data.get("mermaid_parser")
+    return section if isinstance(section, dict) else {}
+
+
+_GATE = _read_gate()
+MODULES_DIR = _GATE.get("modules_dir")
+DOC_PATHS = _GATE.get("paths", str(REPO))
 
 
 def _reason_to_skip() -> str | None:
     if not MODULES_DIR:
-        return "PICOAGENT_MERMAID_PARSER_DIR is not set (see dev/README.md)"
-    modules = Path(MODULES_DIR) / "node_modules"
+        return f"not enabled in {GATE_FILE} (see dev/README.md)"
+    modules = Path(MODULES_DIR).expanduser() / "node_modules"
     for package in ("mermaid", "jsdom"):
         if not (modules / package).is_dir():
             return f"{package} is not installed in {modules}"
@@ -50,7 +71,8 @@ class RealParserTests(unittest.TestCase):
 
     def test_every_diagram_parses(self):
         result = subprocess.run(
-            ["node", str(SCRIPT), "--modules", MODULES_DIR, *DOC_PATHS.split(os.pathsep)],
+            ["node", str(SCRIPT), "--modules", str(Path(MODULES_DIR).expanduser()),
+             *DOC_PATHS.split(os.pathsep)],
             capture_output=True, text=True, timeout=300)
         self.assertEqual(result.returncode, 0,
                          f"mermaid rejected at least one diagram:\n{result.stdout}\n{result.stderr}")
@@ -67,7 +89,7 @@ class RealParserTests(unittest.TestCase):
             bad.write_text("```mermaid\nsequenceDiagram\n    participant Loop\n"
                            "    A->>Loop: go\n```\n")
             result = subprocess.run(
-                ["node", str(SCRIPT), "--modules", MODULES_DIR, str(bad)],
+                ["node", str(SCRIPT), "--modules", str(Path(MODULES_DIR).expanduser()), str(bad)],
                 capture_output=True, text=True, timeout=300)
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("FAIL", result.stdout)

@@ -178,6 +178,36 @@ class MermaidLintTool:
         return ToolResult(ctx.tool_call_id, header + "\n" + "\n".join(lines), is_error=any_issue)
 
 
+#: Opt-in file for the developer-only real-parser check (see dev/README.md). The model has no
+#: legitimate reason to touch it, and every reason not to: writing it is how a developer says
+#: "it is fine to execute Node on this machine". Guarded below.
+DEV_TOOLS_FILE = Path.home() / ".picoagent" / "dev-tools.toml"
+
+
+async def guard_dev_tools_file(event: dict, rt) -> dict | None:
+    """Refuse any tool call whose path argument names the dev-tools opt-in file.
+
+    Applies to every tool rather than a named list, so a tool added later doesn't inherit a
+    bypass. This closes the file tools - read, write, edit, grep_search, structured_data.
+    It does **not** close the shell: a shell command runs as the user and can write any file
+    the user can, which is measured behaviour, not a theoretical gap. dev/README.md says so
+    plainly rather than implying containment this doesn't have.
+    """
+    for key in ("path", "file", "filename", "filepath"):
+        raw = event["args"].get(key)
+        if not raw:
+            continue
+        try:
+            if Path(str(raw)).expanduser().resolve() == DEV_TOOLS_FILE.resolve():
+                return {"block": True,
+                        "reason": "dev-tools.toml enables developer-only execution of Node and "
+                                  "is not the agent's to read or change"}
+        except (OSError, RuntimeError):
+            continue
+    return None
+
+
 def register(api):
     api.register_tool(MermaidReferenceTool())
     api.register_tool(MermaidLintTool())
+    api.on("tool_call", guard_dev_tools_file)
