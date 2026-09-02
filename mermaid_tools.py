@@ -29,6 +29,20 @@ _FENCE = re.compile(r"```mermaid\n(.*?)```", re.S)
 _KNOWN_TYPES = tuple(DIAGRAM_TYPES) + ("timeline", "quadrantChart", "gitGraph", "requirementDiagram", "C4Context")
 _BRACKET_PAIRS = {"(": ")", "[": "]", "{": "}"}
 
+# Words the sequenceDiagram grammar owns. Using one as a participant name is a parse error,
+# not a style problem - `participant Loop` collides with the `loop ... end` block. Confirmed
+# by running these through mermaid 11.17.2 rather than inferred from the docs.
+_SEQUENCE_RESERVED = {"loop", "alt", "else", "opt", "par", "and", "critical", "break",
+                      "rect", "note", "end", "activate", "deactivate", "autonumber"}
+_PARTICIPANT = re.compile(r"^\s*(?:participant|actor)\s+([A-Za-z_][\w-]*)", re.M)
+# A message's text runs to end of line, except that ";" ends the statement early.
+_SEQUENCE_MESSAGE = re.compile(r"^\s*\w[\w-]*\s*-?-?>>?\+?-?[->]*\s*\w[\w-]*\s*:(.*)$", re.M)
+# Lowercase "end" as a flowchart node id closes the enclosing subgraph instead. "End" is fine.
+# Only an "end" that is an edge endpoint or carries a shape is a node - a bare "end" on its
+# own line is the legitimate subgraph terminator and must not be flagged.
+_ARROW = r"(?:-\.-+>|--+>|==+>|--+)"
+_FLOWCHART_END_NODE = re.compile(rf"{_ARROW}\s*end\b|\bend\s*(?:{_ARROW}|\[|\(|\{{)", re.M)
+
 
 def _resolve(cwd: Path, raw: str) -> Path:
     path = Path(raw)
@@ -54,6 +68,31 @@ def _check_block(body: str) -> list[str]:
         issues.append("odd number of double quotes (an unterminated label)")
     if len(stripped.splitlines()) < 2:
         issues.append("only a diagram-type line, no actual content")
+    issues += _check_reserved_words(stripped, first_line)
+    return issues
+
+
+def _check_reserved_words(body: str, first_line: str) -> list[str]:
+    """Catch grammar collisions that look like ordinary text.
+
+    These are the failures balanced-bracket checking cannot see: the diagram is well-formed
+    to a regex and still refuses to parse, because a name or a character belongs to the
+    grammar. Both rules below were found by running real diagrams through mermaid, not by
+    reading the docs - this linter had passed both.
+    """
+    issues = []
+    if first_line.startswith("sequenceDiagram"):
+        for name in _PARTICIPANT.findall(body):
+            if name.lower() in _SEQUENCE_RESERVED:
+                issues.append(f"participant {name!r} is a sequenceDiagram keyword and will not "
+                              f"parse - rename it (e.g. {name}Actor)")
+        for text in _SEQUENCE_MESSAGE.findall(body):
+            if ";" in text:
+                issues.append(f"';' in message text ends the statement early: {text.strip()!r}")
+    elif first_line.startswith(("flowchart", "graph")):
+        if _FLOWCHART_END_NODE.search(body):
+            issues.append("lowercase 'end' as a node id closes the enclosing subgraph - "
+                          "capitalise it ('End') or rename it")
     return issues
 
 
