@@ -12,6 +12,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import mermaid_versions as versions
+
 DIAGRAM_TYPES = {
     "graph": "graph TD\n    A[Start] --> B{Decision}\n    B -->|yes| C[Do it]\n    B -->|no| D[Skip]",
     "flowchart": "flowchart LR\n    A[Start] --> B[End]",
@@ -26,7 +28,14 @@ DIAGRAM_TYPES = {
 }
 
 _FENCE = re.compile(r"```mermaid\n(.*?)```", re.S)
-_KNOWN_TYPES = tuple(DIAGRAM_TYPES) + ("timeline", "quadrantChart", "gitGraph", "requirementDiagram", "C4Context")
+# Derived rather than hand-maintained: the version table in mermaid_versions is the list of
+# diagram types that exist, so a type added there is recognised here automatically. A stale
+# hand-written list rejected valid diagrams like block-beta as "unknown", which is the worst
+# kind of lint failure - it is wrong about working syntax.
+_ALWAYS_AVAILABLE = ("graph", "flowchart", "sequenceDiagram", "classDiagram", "gantt", "pie",
+                     "gitGraph", "zenuml")
+_KNOWN_TYPES = tuple(sorted(set(DIAGRAM_TYPES) | set(versions.DIAGRAM_MIN_VERSION)
+                            | set(_ALWAYS_AVAILABLE), key=len, reverse=True))
 _BRACKET_PAIRS = {"(": ")", "[": "]", "{": "}"}
 
 # Words the sequenceDiagram grammar owns. Using one as a participant name is a parse error,
@@ -111,16 +120,33 @@ class MermaidReferenceTool:
 
 class MermaidLintTool:
     name = "mermaid_lint"
-    description = ("Sanity-check every ```mermaid fenced block in a markdown file: known diagram "
-                   "type, balanced brackets/quotes, non-empty body. Not a real parser - catches "
-                   "the common breakage, not everything. Run this after writing diagrams.")
-    parameters = {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
+    description = (
+        "Sanity-check every ```mermaid fenced block in a markdown file: known diagram type, "
+        "balanced brackets/quotes, non-empty body, and grammar collisions (reserved words as "
+        "sequence participants, ';' in message text, lowercase 'end' as a flowchart node). "
+        "Pass 'target' to also check what a specific renderer supports - 'gitlab:17.2' or "
+        "'mermaid:10.7.0' - which catches diagram types and syntax too new for it, plus "
+        "GitLab's size limits. Not a real parser: it catches known breakage, not everything."
+    )
+    parameters = {"type": "object", "properties": {
+        "path": {"type": "string"},
+        "target": {"type": "string",
+                   "description": "Renderer to check against, e.g. 'gitlab:17.2' or "
+                                  "'mermaid:10.7.0'. Omit to check syntax only."}},
+        "required": ["path"]}
 
     async def execute(self, args: dict, ctx) -> "ToolResult":
         from picoagent.core.types import ToolResult
         path = _resolve(ctx.cwd, args["path"])
         if not path.exists():
             return ToolResult(ctx.tool_call_id, f"File not found: {path}", is_error=True)
+
+        target, mermaid_version = args.get("target"), None
+        if target:
+            mermaid_version, error = versions.resolve_target(target)
+            if error:
+                return ToolResult(ctx.tool_call_id, error, is_error=True)
+
         text = path.read_text(errors="replace")
         blocks = _FENCE.findall(text)
         if not blocks:
@@ -129,13 +155,27 @@ class MermaidLintTool:
         lines, any_issue = [], False
         for i, block in enumerate(blocks, start=1):
             issues = _check_block(block)
+            if mermaid_version:
+                first_line = block.strip().splitlines()[0].strip() if block.strip() else ""
+                issues += versions.check_supported(block, first_line, mermaid_version)
+                if target.lower().startswith("gitlab"):
+                    issues += versions.check_gitlab_limits(block)
             if issues:
                 any_issue = True
                 lines.append(f"Diagram {i}: FAIL\n  - " + "\n  - ".join(issues))
             else:
                 lines.append(f"Diagram {i}: ok")
-        summary = f"{len(blocks)} diagram(s) checked in {path}\n" + "\n".join(lines)
-        return ToolResult(ctx.tool_call_id, summary, is_error=any_issue)
+
+        if mermaid_version and target.lower().startswith("gitlab"):
+            page_issues = versions.check_page_limits(blocks)
+            if page_issues:
+                any_issue = True
+                lines.append("Page totals: FAIL\n  - " + "\n  - ".join(page_issues))
+
+        header = f"{len(blocks)} diagram(s) checked in {path}"
+        if mermaid_version:
+            header += f" against {target} (Mermaid {mermaid_version})"
+        return ToolResult(ctx.tool_call_id, header + "\n" + "\n".join(lines), is_error=any_issue)
 
 
 def register(api):
