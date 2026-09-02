@@ -59,7 +59,9 @@ const FENCE = /```mermaid\n([\s\S]*?)```/g;
 let total = 0, failed = 0;
 
 for (const target of targets) {
-  for (const file of markdownFiles(target).sort()) {
+  // Explicit comparator: default sort is lexicographic, which is what we want for path
+  // strings, but saying so silences the generic 'provide a compare function' warning.
+  for (const file of markdownFiles(target).sort((a, b) => a.localeCompare(b))) {
     const text = readFileSync(file, 'utf8');
     let match, index = 0;
     while ((match = FENCE.exec(text)) !== null) {
