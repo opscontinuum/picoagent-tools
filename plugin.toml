@@ -1,0 +1,6 @@
+name = "picoagent-tools"
+version = "0.1.0"
+entry = "picoagent_tools:register"
+description = "Stdlib-only base toolset: Mermaid diagrams, code search, read-only git introspection, test running, structured data"
+requires = ["picoagent>=0.1"]
+skills = ["skills"]
